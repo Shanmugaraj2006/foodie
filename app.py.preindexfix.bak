@@ -1,0 +1,129 @@
+from flask import Flask, send_from_directory, jsonify, request, session, redirect, url_for, render_template, g
+import sqlite3, os
+
+BASE = os.path.dirname(__file__)
+DB_PATH = os.path.join(BASE, "data", "app.db")
+
+app = Flask(__name__, static_folder="static", template_folder="templates")
+app.secret_key = "devkey-please-change"
+
+def get_db():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+@app.before_request
+def load_user():
+    g.user = session.get("user")
+
+# Serve the project's fancy static index (do not change design)
+@app.route("/", methods=["GET"])
+def root_index():
+    return send_from_directory(BASE, "index.html")
+
+# Simple API to fetch dishes; supports ?category=...
+@app.route("/api/dishes", methods=["GET"])
+def api_dishes():
+    category = request.args.get("category")
+    db = get_db()
+    if category:
+        rows = db.execute("SELECT * FROM dishes WHERE lower(category)=?", (category.lower(),)).fetchall()
+    else:
+        rows = db.execute("SELECT * FROM dishes").fetchall()
+    dishes = [dict(r) for r in rows]
+    # ensure image paths are correct for static serving
+    for d in dishes:
+        if d.get("image") and d["image"].startswith("/static/"):
+            d["image"] = d["image"]
+        else:
+            d["image"] = "/static/images/placeholder1.png"
+    return jsonify(dishes)
+
+# Admin login (simple)
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    if request.method == "POST":
+        username = request.form.get("username")
+        password = request.form.get("password")
+        db = get_db()
+        user = db.execute("SELECT * FROM users WHERE username=? AND password=?", (username, password)).fetchone()
+        if user:
+            session["user"] = {"id": user["id"], "username": user["username"], "role": user["role"]}
+            return redirect(url_for("admin_dishes"))
+        return render_template("admin.html", error="Invalid credentials")
+    return render_template("admin.html")
+
+@app.route("/admin/dishes")
+def admin_dishes():
+    if not g.user or g.user.get("role") != "admin":
+        return redirect(url_for("login"))
+    db = get_db()
+    dishes = db.execute("SELECT * FROM dishes").fetchall()
+    return render_template("admin_dishes.html", dishes=dishes)
+
+@app.route("/admin/add", methods=["POST"])
+def admin_add():
+    if not g.user or g.user.get("role") != "admin":
+        return redirect(url_for("login"))
+    name = request.form.get("name")
+    price = request.form.get("price")
+    category = request.form.get("category")
+    image = request.form.get("image") or "/static/images/placeholder1.png"
+    db = get_db()
+    db.execute("INSERT INTO dishes (name, price, image, category) VALUES (?,?,?,?)", (name, float(price), image, category))
+    db.commit()
+    return redirect(url_for("admin_dishes"))
+
+@app.route("/logout")
+def logout():
+    session.clear()
+    return redirect(url_for("root_index"))
+
+# Ensure DB exists and has seed data
+def ensure_db():
+    os.makedirs(os.path.join(BASE, "data"), exist_ok=True)
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute("""CREATE TABLE IF NOT EXISTS users (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        username TEXT UNIQUE,
+        password TEXT,
+        role TEXT
+    )""")
+    cur.execute("""CREATE TABLE IF NOT EXISTS dishes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT,
+        price REAL,
+        image TEXT,
+        category TEXT
+    )""")
+    # ensure admin user exists
+    cur.execute("SELECT COUNT(*) FROM users WHERE username='admin'")
+    if cur.fetchone()[0] == 0:
+        cur.execute("INSERT INTO users (username,password,role) VALUES (?,?,?)", ("admin","admin","admin"))
+    # seed dishes if few exist
+    cur.execute("SELECT COUNT(*) FROM dishes")
+    count = cur.fetchone()[0]
+    if count < 12:
+        sample = [
+            ("Masala Dosa", 80, "/static/images/placeholder1.png", "south indian"),
+            ("Idli Sambhar", 60, "/static/images/placeholder2.png", "south indian"),
+            ("Butter Chicken", 220, "/static/images/placeholder3.png", "north indian"),
+            ("Veg Biryani", 160, "/static/images/placeholder4.png", "biryani"),
+            ("Paneer Tikka", 180, "/static/images/placeholder5.png", "starter"),
+            ("Margherita Pizza", 250, "/static/images/placeholder6.png", "italian"),
+            ("Pasta Alfredo", 230, "/static/images/placeholder7.png", "italian"),
+            ("Tiramisu", 150, "/static/images/placeholder8.png", "italian"),
+            ("Tacos", 140, "/static/images/placeholder9.png", "mexican"),
+            ("Burrito", 170, "/static/images/placeholder10.png", "mexican"),
+            ("Nachos", 120, "/static/images/placeholder11.png", "mexican"),
+            ("Gulab Jamun", 60, "/static/images/placeholder12.png", "dessert"),
+        ]
+        cur.executemany("INSERT INTO dishes (name,price,image,category) VALUES (?,?,?,?)", sample)
+    conn.commit()
+    conn.close()
+
+if __name__ == "__main__":
+    ensure_db()
+    print("DB ready at", DB_PATH)
+    app.run(debug=True, host="0.0.0.0", port=5000)

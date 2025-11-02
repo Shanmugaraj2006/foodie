@@ -1,0 +1,56 @@
+
+from flask import Flask, render_template, request, redirect, session, g, url_for
+import sqlite3, os
+app = Flask(__name__)
+app.secret_key = "devkey"
+DB = os.path.join(os.path.dirname(__file__), "data", "app.db")
+
+def get_db():
+    conn = sqlite3.connect(DB)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+@app.before_request
+def load_user():
+    g.user = session.get("user")
+
+@app.route("/")
+def index():
+    db = get_db()
+    dishes = db.execute("SELECT * FROM dishes").fetchall()
+    return render_template("index.html", dishes=dishes)
+
+@app.route("/login", methods=["GET","POST"])
+def login():
+    if request.method == "POST":
+        username = request.form.get("username")
+        password = request.form.get("password")
+        db = get_db()
+        user = db.execute("SELECT * FROM users WHERE username=? AND password=?", (username,password)).fetchone()
+        if user:
+            session["user"] = dict(id=user["id"], username=user["username"], role=user["role"])
+            return redirect(url_for("admin") if user["role"]=="admin" else url_for("index"))
+        return "Invalid credentials", 401
+    return render_template("login.html")
+
+@app.route("/admin")
+def admin():
+    if not g.user or g.user.get("role") != "admin":
+        return redirect(url_for("login"))
+    return render_template("admin.html")
+
+@app.route("/admin/dishes")
+def admin_dishes():
+    if not g.user or g.user.get("role") != "admin":
+        return redirect(url_for("login"))
+    db = get_db()
+    dishes = db.execute("SELECT * FROM dishes").fetchall()
+    return render_template("admin_dishes.html", dishes=dishes)
+
+@app.route("/logout")
+def logout():
+    session.clear()
+    return redirect(url_for("index"))
+
+if __name__ == "__main__":
+    app.run(debug=True)
